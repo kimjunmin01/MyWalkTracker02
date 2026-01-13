@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>PetWalk - 실시간 산책 트래커 & 속도계</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        :root { --primary: #4CAF50; --bg: #f9fbf9; --text: #333; --white: #ffffff; --accent: #E91E63; }
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Pretendard', sans-serif; background: var(--bg); overflow-x: hidden; }
+
+        /* 검색 및 지도 */
+        .search-container { position: absolute; top: 10px; left: 0; right: 0; padding: 0 15px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
+        .search-box { display: flex; background: var(--white); border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.12); height: 46px; }
+        .search-box input { flex: 1; border: none; padding: 0 15px; outline: none; font-size: 15px; background: transparent; }
+        .search-box button { background: var(--primary); color: white; border: none; padding: 0 12px; cursor: pointer; font-weight: 600; min-width: 60px; }
+        #map { height: 100%; width: 100%; z-index: 1; }
+
+        /* 하단 패널 */
+        .panel { position: absolute; bottom: 0; left: 0; right: 0; z-index: 1000; background: var(--white); padding: 15px 20px calc(20px + env(safe-area-inset-bottom)); border-radius: 24px 24px 0 0; box-shadow: 0 -5px 20px rgba(0,0,0,0.1); max-height: 70vh; overflow-y: auto; }
+        .main-buttons { display: flex; gap: 10px; margin-bottom: 10px; }
+        .btn-action { flex: 1; height: 48px; border: none; border-radius: 12px; font-weight: 700; color: white; cursor: pointer; }
+        .btn-walk { background: var(--primary); }
+        .btn-tracking { background: var(--accent); }
+        .btn-reset { background: #607D8B; } /* 초기화 버튼 색상 */
+        .tracking-active { animation: pulse 1.5s infinite; background: #c2185b !important; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.8; } 100% { opacity: 1; } }
+
+        /* 정보 카드 */
+        .info-card { margin-top: 10px; padding: 15px; border-radius: 16px; background: #f1f8f1; display: none; border-left: 5px solid var(--primary); }
+        .info-card.active { display: block; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .info-item { display: flex; flex-direction: column; }
+        .info-label { font-size: 12px; color: #666; font-weight: 600; }
+        .info-value { font-size: 18px; font-weight: 800; color: #333; }
+
+        /* 내 위치 버튼 */
+        .btn-locate { position: absolute; bottom: 380px; right: 20px; z-index: 1000; background: white; border: none; width: 45px; height: 45px; border-radius: 50%; box-shadow: 0 2px 10px rgba(0,0,0,0.2); cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; }
+        .user-dot { background: #2196F3; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 5px rgba(0,0,0,0.5); }
+
+        /* 일지 리스트 */
+        .diary-form { margin-top: 15px; display: none; }
+        .diary-form.active { display: block; }
+        .diary-item { background:white; padding:15px; border-radius:15px; margin-bottom:12px; border:1px solid #eee; position:relative; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
+        .btn-del-diary { position: absolute; top: 12px; right: 12px; background: #ffeded; color: #ff5252; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="search-container">
+    <div class="search-box">
+        <input type="text" id="endSearch" placeholder="목적지 검색">
+        <button onclick="searchLocation('end')">찾기</button>
+    </div>
+</div>
+
+<div id="map"></div>
+<button class="btn-locate" onclick="moveToUserLocation()">내위치</button>
+
+<div class="panel">
+    <div class="main-buttons">
+        <button id="trackBtn" class="btn-action btn-tracking" onclick="toggleTracking()">▶️ 산책 시작</button>
+        <button class="btn-action btn-walk" onclick="getRoute()">🐾 경로 안내</button>
+        <button class="btn-action btn-reset" onclick="resetAll()">🔄 초기화</button>
+    </div>
+
+    <div id="infoCard" class="info-card">
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">📏 이동 거리</span>
+                <span id="realDistVal" class="info-value">0.00 km</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">⏱ 경과 시간</span>
+                <span id="durationVal" class="info-value">0분 0초</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">🚀 평균 속도</span>
+                <span id="avgSpeedVal" class="info-value">0.0 km/h</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">📍 현재 속도</span>
+                <span id="curSpeedVal" class="info-value">0.0 km/h</span>
+            </div>
+        </div>
+        <button class="btn-action" style="background:#673AB7; width:100%; margin-top:15px;" onclick="showDiaryForm()">✅ 산책 종료 및 기록</button>
+    </div>
+
+    <div id="diaryForm" class="diary-form">
+        <textarea id="diaryMemo" rows="3" placeholder="오늘 산책 어떠셨나요? 강아지 컨디션은요?" style="width:100%; padding:12px; border-radius:10px; border:1px solid #ddd; box-sizing:border-box; font-family:inherit;"></textarea>
+        <button class="btn-action" style="background:var(--primary); width:100%; margin-top:10px;" onclick="submitDiary()">저장 완료</button>
+    </div>
+
+    <div class="diary-list">
+        <h3 style="font-size: 16px; margin: 25px 0 12px 0; color: #444;">📅 최근 산책 일지</h3>
+        <div id="diaryItems"></div>
+    </div>
+</div>
+
+<script>
+/* ================= 기본 변수 설정 ================= */
+const map = L.map("map", { zoomControl: false }).setView([37.5665, 126.9780], 15);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png").addTo(map);
+
+let startMarker, endMarker, routeLine;
+let userMarker, watchId, isTracking = false;
+let pathPoints = []; 
+let realPathLine;   
+let totalDistance = 0; 
+let startTime, timerInterval;
+
+/* ================= 초기화 기능 ================= */
+function resetAll() {
+    if (isTracking) {
+        if (!confirm("현재 산책 트래킹이 진행 중입니다. 정말 초기화하시겠습니까?")) return;
+        stopTracking(document.getElementById('trackBtn'));
+    }
+
+    // 1. 지도 요소 제거
+    if (endMarker) map.removeLayer(endMarker);
+    if (routeLine) map.removeLayer(routeLine);
+    if (realPathLine) map.removeLayer(realPathLine);
+    if (userMarker) map.removeLayer(userMarker);
+    
+    endMarker = null;
+    routeLine = null;
+    realPathLine = null;
+    userMarker = null;
+
+    // 2. 데이터 초기화
+    pathPoints = [];
+    totalDistance = 0;
+    
+    // 3. UI 초기화
+    document.getElementById("infoCard").classList.remove("active");
+    document.getElementById("diaryForm").classList.remove("active");
+    document.getElementById("endSearch").value = "";
+    document.getElementById("realDistVal").innerText = "0.00 km";
+    document.getElementById("durationVal").innerText = "0분 0초";
+    document.getElementById("avgSpeedVal").innerText = "0.0 km/h";
+    document.getElementById("curSpeedVal").innerText = "0.0 km/h";
+    document.getElementById("trackBtn").innerHTML = "▶️ 산책 시작";
+
+    alert("지도와 실시간 데이터가 초기화되었습니다.");
+}
+
+/* ================= 실시간 트래킹 & 속도 계산 ================= */
+function toggleTracking() {
+    const btn = document.getElementById('trackBtn');
+    if (!isTracking) {
+        startTracking(btn);
+    } else {
+        stopTracking(btn);
+    }
+}
+
+function startTracking(btn) {
+    if (!navigator.geolocation) return alert("GPS 권한이 필요합니다.");
+
+    isTracking = true;
+    btn.innerHTML = "⏹ 산책 중지";
+    btn.classList.add('tracking-active');
+    document.getElementById("infoCard").classList.add("active");
+    
+    pathPoints = [];
+    totalDistance = 0;
+    startTime = new Date();
+    
+    if (realPathLine) map.removeLayer(realPathLine);
+    realPathLine = L.polyline([], { color: '#E91E63', weight: 6, opacity: 0.8, dashArray: '8, 12' }).addTo(map);
+
+    timerInterval = setInterval(updateTimerAndSpeed, 1000);
+
+    watchId = navigator.geolocation.watchPosition(pos => {
+        const { latitude, longitude, speed } = pos.coords;
+        const currentPos = [latitude, longitude];
+
+        const kmh = speed ? (speed * 3.6).toFixed(1) : "0.0";
+        document.getElementById("curSpeedVal").innerText = kmh + " km/h";
+
+        if (!userMarker) {
+            userMarker = L.marker(currentPos, { icon: L.divIcon({ className: 'user-dot', iconSize: [14, 14] }) }).addTo(map);
+        } else {
+            userMarker.setLatLng(currentPos);
+        }
+
+        if (pathPoints.length > 0) {
+            const lastPos = pathPoints[pathPoints.length - 1];
+            const dist = map.distance(lastPos, currentPos); 
+            if (dist > 3) { 
+                totalDistance += dist;
+                pathPoints.push(currentPos);
+                realPathLine.setLatLngs(pathPoints);
+                document.getElementById("realDistVal").innerText = (totalDistance / 1000).toFixed(2) + " km";
+            }
+        } else {
+            pathPoints.push(currentPos);
+        }
+        
+        map.panTo(currentPos);
+    }, err => console.error(err), { enableHighAccuracy: true });
+}
+
+function updateTimerAndSpeed() {
+    const now = new Date();
+    const diffSec = Math.floor((now - startTime) / 1000);
+    const min = Math.floor(diffSec / 60);
+    const sec = diffSec % 60;
+    document.getElementById("durationVal").innerText = `${min}분 ${sec}초`;
+
+    if (diffSec > 0) {
+        const hours = diffSec / 3600;
+        const km = totalDistance / 1000;
+        const avgSpeed = (km / hours).toFixed(1);
+        document.getElementById("avgSpeedVal").innerText = avgSpeed + " km/h";
+    }
+}
+
+function stopTracking(btn) {
+    navigator.geolocation.clearWatch(watchId);
+    clearInterval(timerInterval);
+    isTracking = false;
+    btn.innerHTML = "▶️ 산책 다시 시작";
+    btn.classList.remove('tracking-active');
+}
+
+/* ================= 유틸리티 기능 ================= */
+function moveToUserLocation() {
+    navigator.geolocation.getCurrentPosition(pos => {
+        const latlng = [pos.coords.latitude, pos.coords.longitude];
+        map.setView(latlng, 17);
+        if (!userMarker) {
+            userMarker = L.marker(latlng, { icon: L.divIcon({ className: 'user-dot', iconSize: [14, 14] }) }).addTo(map);
+        } else {
+            userMarker.setLatLng(latlng);
+        }
+    });
+}
+
+async function searchLocation(type) {
+    const query = document.getElementById('endSearch').value;
+    if (!query) return;
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    if (data.length > 0) {
+        const latlng = [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+        if (endMarker) map.removeLayer(endMarker);
+        endMarker = L.marker(latlng).addTo(map).bindPopup("목적지").openPopup();
+        map.setView(latlng, 15);
+    }
+}
+
+async function getRoute() {
+    if (!endMarker) return alert("목적지를 먼저 검색하거나 지도를 클릭해주세요.");
+    
+    navigator.geolocation.getCurrentPosition(async pos => {
+        const s = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        const e = endMarker.getLatLng();
+        const res = await fetch(`https://router.project-osrm.org/route/v1/foot/${s.lng},${s.lat};${e.lng},${e.lat}?overview=full&geometries=geojson`);
+        const data = await res.json();
+        if (routeLine) map.removeLayer(routeLine);
+        routeLine = L.polyline(data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]), { color: "#4CAF50", weight: 4, opacity: 0.6 }).addTo(map);
+        map.fitBounds(routeLine.getBounds());
+    });
+}
+
+map.on("click", e => {
+    if (endMarker) map.removeLayer(endMarker);
+    endMarker = L.marker(e.latlng).addTo(map).bindPopup("목적지");
+});
+
+/* ================= 일지 관리 로직 ================= */
+function showDiaryForm() {
+    if (isTracking) stopTracking(document.getElementById('trackBtn'));
+    document.getElementById("diaryForm").classList.add("active");
+}
+
+function submitDiary() {
+    const memo = document.getElementById("diaryMemo").value;
+    if (!memo) return alert("간단한 일지를 써주세요.");
+
+    const avgSpeed = document.getElementById("avgSpeedVal").innerText;
+    const diaryData = {
+        id: Date.now(),
+        date: new Date().toLocaleString(),
+        dist: (totalDistance / 1000).toFixed(2),
+        speed: avgSpeed,
+        memo: memo
+    };
+
+    let history = JSON.parse(localStorage.getItem("petWalkDiary") || "[]");
+    history.unshift(diaryData);
+    localStorage.setItem("petWalkDiary", JSON.stringify(history));
+
+    document.getElementById("diaryForm").classList.remove("active");
+    document.getElementById("infoCard").classList.remove("active");
+    document.getElementById("diaryMemo").value = "";
+    if(realPathLine) map.removeLayer(realPathLine);
+    renderDiary();
+}
+
+function renderDiary() {
+    const container = document.getElementById("diaryItems");
+    const history = JSON.parse(localStorage.getItem("petWalkDiary") || "[]");
+    container.innerHTML = history.length ? "" : "<p style='color:#999; font-size:13px;'>저장된 일지가 없습니다.</p>";
+
+    history.forEach(item => {
+        const div = document.createElement("div");
+        div.className = "diary-item";
+        div.innerHTML = `
+            <button class="btn-del-diary" onclick="deleteDiary(${item.id})">✕</button>
+            <div style="font-size:11px; color:#999;">${item.date}</div>
+            <div style="font-weight:800; color:var(--primary); margin:5px 0;">🐾 ${item.dist} km (${item.speed})</div>
+            <div style="font-size:14px; color:#555; line-height:1.4;">${item.memo}</div>
+        `;
+        container.appendChild(div);
+    });
+}
+
+function deleteDiary(id) {
+    let history = JSON.parse(localStorage.getItem("petWalkDiary") || "[]");
+    history = history.filter(i => i.id !== id);
+    localStorage.setItem("petWalkDiary", JSON.stringify(history));
+    renderDiary();
+}
+
+renderDiary();
+</script>
+</body>
+</html>
